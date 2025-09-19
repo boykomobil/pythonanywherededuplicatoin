@@ -1,7 +1,11 @@
+# settings.py
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Project root: .../pythonanywherededuplicatoin
+BASE_DIR = Path(__file__).resolve().parents[1]  # src/ -> project root
+load_dotenv(BASE_DIR / ".env")  # <-- explicit path
 
 FLASK_ENV = os.getenv("FLASK_ENV", "production")
 PORT = int(os.getenv("PORT", "3000"))
