@@ -72,6 +72,44 @@ def hubspot_webhook():
     return jsonify({"status": "ok", "enqueued": enq})
 
 
+@app.get("/results/<unique_identifier>")
+def get_results(unique_identifier: str):
+    """Get deduplication results by unique_identifier"""
+    conn = get_conn(DB)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    id, enqueued_at, unique_identifier, status, attempts,
+                    initial_found_record_ids, new_merged_record_id, merge_count, last_error
+                FROM jobs 
+                WHERE unique_identifier = %s 
+                ORDER BY enqueued_at DESC 
+                LIMIT 1
+            """, (unique_identifier,))
+            job = cur.fetchone()
+            
+            if not job:
+                return jsonify({"error": "No results found for this unique_identifier"}), 404
+            
+            # Parse the comma-separated record IDs
+            old_record_ids = []
+            if job["initial_found_record_ids"]:
+                old_record_ids = job["initial_found_record_ids"].split(",")
+            
+            return jsonify({
+                "unique_identifier": job["unique_identifier"],
+                "status": job["status"],
+                "enqueued_at": job["enqueued_at"].isoformat() if job["enqueued_at"] else None,
+                "attempts": job["attempts"],
+                "old_record_ids": old_record_ids,
+                "new_record_id": job["new_merged_record_id"],
+                "merge_count": job["merge_count"],
+                "error": job["last_error"]
+            })
+    finally:
+        conn.close()
+
 @app.get("/health")
 def health():
     # keep it fast and dependency-free (no DB calls here)

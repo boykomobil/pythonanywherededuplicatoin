@@ -26,9 +26,12 @@ def mark_working(conn, job_id: int):
     with conn.cursor() as cur:
         cur.execute("UPDATE jobs SET status='working', attempts=attempts+1 WHERE id=%s", (job_id,))
 
-def mark_done(conn, job_id: int):
+def mark_done(conn, job_id: int, initial_found_record_ids: str = None, new_merged_record_id: str = None, merge_count: int = 0):
     with conn.cursor() as cur:
-        cur.execute("UPDATE jobs SET status='done', last_error=NULL WHERE id=%s", (job_id,))
+        cur.execute(
+            "UPDATE jobs SET status='done', last_error=NULL, initial_found_record_ids=%s, new_merged_record_id=%s, merge_count=%s WHERE id=%s", 
+            (initial_found_record_ids, new_merged_record_id, merge_count, job_id)
+        )
 
 def mark_error(conn, job_id: int, msg: str):
     with conn.cursor() as cur:
