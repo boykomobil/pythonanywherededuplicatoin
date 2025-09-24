@@ -10,13 +10,21 @@ def loop():
         try:
             conn = get_conn(DB)
             try:
+                # Start transaction for job processing
+                conn.begin()
+                
                 row = get_one_queued_for_update(conn)
                 if not row:
+                    conn.rollback()  # Clean rollback for empty result
                     time.sleep(POLL_INTERVAL_SECONDS)
                     continue
+                    
                 job_id, uid, dry = row["id"], row["unique_identifier"], bool(row["dry_run"])
                 print(f"[worker] picked job {job_id} (uid={uid}, dry={dry})", flush=True)
+                
+                # Mark as working within the transaction
                 mark_working(conn, job_id)
+                
                 try:
                     # Get initial contacts before processing
                     from .dedupe_core import fetch_contacts_by_unique
@@ -32,10 +40,23 @@ def loop():
                     
                     # Mark job as done with merge data
                     mark_done(conn, job_id, initial_found_record_ids, new_merged_record_id, merge_count)
+                    
+                    # Commit the transaction - this releases the FOR UPDATE lock
+                    conn.commit()
+                    
                     print(f"[worker] done job {job_id} (found: {len(initial_contacts) if initial_contacts else 0}, merged: {merge_count}, final: {new_merged_record_id})", flush=True)
+                    
                 except Exception as e:
+                    # Rollback transaction on error
+                    conn.rollback()
+                    
+                    # Start new transaction to mark error
+                    conn.begin()
                     mark_error(conn, job_id, str(e))
+                    conn.commit()
+                    
                     print(f"[worker] error job {job_id}: {e}", file=sys.stderr, flush=True)
+                    
             finally:
                 conn.close()
         except Exception as outer:

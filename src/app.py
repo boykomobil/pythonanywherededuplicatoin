@@ -62,9 +62,15 @@ def hubspot_webhook():
     if uids:
         conn = get_conn(DB)
         try:
+            conn.begin()
             for uid in uids:
                 enqueue_job(conn, uid, DEFAULT_DRY_RUN)   # relies on jobs.status default 'queued'
                 enq += 1
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            app.logger.error(f"[webhook] failed to enqueue jobs: {e}")
+            raise
         finally:
             conn.close()
 
@@ -77,6 +83,7 @@ def get_results(unique_identifier: str):
     """Get deduplication results by unique_identifier"""
     conn = get_conn(DB)
     try:
+        conn.begin()
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT 
@@ -88,25 +95,94 @@ def get_results(unique_identifier: str):
                 LIMIT 1
             """, (unique_identifier,))
             job = cur.fetchone()
+        conn.commit()
+        
+        if not job:
+            return jsonify({"error": "No results found for this unique_identifier"}), 404
+        
+        # Parse the comma-separated record IDs
+        old_record_ids = []
+        if job["initial_found_record_ids"]:
+            old_record_ids = job["initial_found_record_ids"].split(",")
+        
+        return jsonify({
+            "unique_identifier": job["unique_identifier"],
+            "status": job["status"],
+            "enqueued_at": job["enqueued_at"].isoformat() if job["enqueued_at"] else None,
+            "attempts": job["attempts"],
+            "old_record_ids": old_record_ids,
+            "new_record_id": job["new_merged_record_id"],
+            "merge_count": job["merge_count"],
+            "error": job["last_error"]
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+    finally:
+        conn.close()
+
+@app.get("/stats")
+def get_stats():
+    """Get processing statistics for monitoring"""
+    conn = get_conn(DB)
+    try:
+        conn.begin()
+        with conn.cursor() as cur:
+            # Get overall stats
+            cur.execute("""
+                SELECT 
+                    status,
+                    COUNT(*) as count,
+                    AVG(merge_count) as avg_merge_count,
+                    SUM(merge_count) as total_merges,
+                    MIN(enqueued_at) as oldest_job,
+                    MAX(enqueued_at) as newest_job
+                FROM jobs 
+                GROUP BY status
+            """)
+            status_stats = cur.fetchall()
             
-            if not job:
-                return jsonify({"error": "No results found for this unique_identifier"}), 404
+            # Get jobs with actual merges vs zero merge_count (potential bug indicator)
+            cur.execute("""
+                SELECT 
+                    COUNT(*) as total_done_jobs,
+                    SUM(CASE WHEN merge_count > 0 THEN 1 ELSE 0 END) as jobs_with_merges,
+                    SUM(CASE WHEN merge_count = 0 THEN 1 ELSE 0 END) as jobs_zero_merges,
+                    AVG(merge_count) as avg_merge_count
+                FROM jobs 
+                WHERE status = 'done'
+            """)
+            merge_stats = cur.fetchone()
             
-            # Parse the comma-separated record IDs
-            old_record_ids = []
-            if job["initial_found_record_ids"]:
-                old_record_ids = job["initial_found_record_ids"].split(",")
+            # Recent activity (last hour)
+            cur.execute("""
+                SELECT 
+                    COUNT(*) as recent_jobs,
+                    SUM(merge_count) as recent_merges
+                FROM jobs 
+                WHERE enqueued_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+            """)
+            recent_stats = cur.fetchone()
             
-            return jsonify({
-                "unique_identifier": job["unique_identifier"],
-                "status": job["status"],
-                "enqueued_at": job["enqueued_at"].isoformat() if job["enqueued_at"] else None,
-                "attempts": job["attempts"],
-                "old_record_ids": old_record_ids,
-                "new_record_id": job["new_merged_record_id"],
-                "merge_count": job["merge_count"],
-                "error": job["last_error"]
-            })
+        conn.commit()
+        
+        return jsonify({
+            "status_breakdown": [dict(row) for row in status_stats],
+            "merge_analysis": dict(merge_stats) if merge_stats else {},
+            "recent_activity": dict(recent_stats) if recent_stats else {},
+            "data_quality": {
+                "merge_success_rate": round(
+                    (merge_stats["jobs_with_merges"] / max(merge_stats["total_done_jobs"], 1)) * 100, 2
+                ) if merge_stats and merge_stats["total_done_jobs"] else 0,
+                "zero_merge_rate": round(
+                    (merge_stats["jobs_zero_merges"] / max(merge_stats["total_done_jobs"], 1)) * 100, 2
+                ) if merge_stats and merge_stats["total_done_jobs"] else 0
+            }
+        })
+        
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": f"Stats query failed: {str(e)}"}), 500
     finally:
         conn.close()
 

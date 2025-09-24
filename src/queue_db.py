@@ -4,7 +4,7 @@ from typing import Optional, Tuple, Any, Dict
 def get_conn(cfg: Dict[str, str]):
     return pymysql.connect(
         host=cfg["host"], user=cfg["user"], password=cfg["password"],
-        database=cfg["database"], autocommit=True, cursorclass=pymysql.cursors.DictCursor
+        database=cfg["database"], autocommit=False, cursorclass=pymysql.cursors.DictCursor
     )
 
 def enqueue_job(conn, unique_identifier: str, dry_run: bool):
